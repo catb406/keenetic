@@ -24,7 +24,10 @@ type (
 	}
 
 	waitChan struct {
+		// data channel is used to transfer values directly to receiver if there are any waiting for response
 		data chan string
+		// stop channel is used for notifying sender to not send value to data channel
+		// if receiver is not waiting for response anymore
 		stop chan struct{}
 	}
 )
@@ -35,7 +38,6 @@ func (q *queue) push(k string, v interface{}) {
 
 	if qu, ok := q.queues[k]; ok {
 		qu.PushBack(v)
-		q.queues[k] = qu
 		return
 	}
 	l := list.New()
@@ -67,10 +69,7 @@ func newSafeQueue() safeQueue {
 
 func newWaitChan() waitChan {
 	return waitChan{
-		// data channel is used to transfer values directly to receiver if there are any waiting for response
 		data: make(chan string),
-		// stop channel is used for notifying sender to not send value to data channel
-		// if receiver is not waiting for response anymore
 		stop: make(chan struct{}),
 	}
 }
@@ -90,25 +89,30 @@ func main() {
 		ctx := request.Context()
 		switch request.Method {
 		case http.MethodGet:
-			if timeout, ok := request.URL.Query()["timeout"]; ok {
-				if len(timeout) != 1 {
-					writer.WriteHeader(http.StatusBadRequest)
-					return
-				}
-				timeoutSecs, err := strconv.Atoi(timeout[0])
-				if err != nil {
-					writer.WriteHeader(http.StatusBadRequest)
-					return
-				}
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, time.Second*time.Duration(timeoutSecs))
-				defer cancel()
-			}
 			if val, ok := values.pop(queueName); ok {
 				// there is value in queue, return it
 				writer.Write([]byte(val.(string)))
 				return
 			}
+
+			timeout, ok := request.URL.Query()["timeout"]
+			if !ok {
+				writer.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if len(timeout) != 1 {
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			timeoutSecs, err := strconv.Atoi(timeout[0])
+			if err != nil {
+				writer.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, time.Second*time.Duration(timeoutSecs))
+			defer cancel()
+
 			c := newWaitChan()
 			// add new receiver to the end of the queue
 			waiters.push(queueName, c)
@@ -122,18 +126,17 @@ func main() {
 			}
 			return
 		case http.MethodPut:
-			var value string
 			v, ok := request.URL.Query()["v"]
 			if !ok || len(v) != 1 {
 				writer.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			value = v[0]
+			value := v[0]
 			if value == "" {
 				writer.WriteHeader(http.StatusBadRequest)
 				return
 			}
-		wait:
+		senderLoop:
 			for {
 				// get first receiver from queue if there are any
 				if w, ok := waiters.pop(queueName); ok {
@@ -143,10 +146,10 @@ func main() {
 					case <-c.stop:
 						continue
 					case c.data <- value:
-						break wait
+						break senderLoop
 						// request cancelled
 					case <-ctx.Done():
-						break wait
+						break senderLoop
 					}
 				} else {
 					// no active receivers, add to queue
@@ -154,6 +157,8 @@ func main() {
 					break
 				}
 			}
+		default:
+			writer.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	})
 
