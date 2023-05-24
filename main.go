@@ -13,12 +13,12 @@ import (
 )
 
 type (
-	queue struct {
+	safeQueue struct {
 		queues map[string]*list.List // key: queue name - value: queue values
 		mu     *sync.Mutex
 	}
 
-	safeQueue interface {
+	queue interface {
 		push(k string, v interface{})
 		pop(k string) (interface{}, bool)
 	}
@@ -32,7 +32,7 @@ type (
 	}
 )
 
-func (q *queue) push(k string, v interface{}) {
+func (q *safeQueue) push(k string, v interface{}) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -45,7 +45,7 @@ func (q *queue) push(k string, v interface{}) {
 	q.queues[k] = l
 }
 
-func (q *queue) pop(k string) (interface{}, bool) {
+func (q *safeQueue) pop(k string) (interface{}, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -60,8 +60,8 @@ func (q *queue) pop(k string) (interface{}, bool) {
 	return nil, false
 }
 
-func newSafeQueue() safeQueue {
-	return &queue{
+func newQueue() queue {
+	return &safeQueue{
 		queues: make(map[string]*list.List),
 		mu:     &sync.Mutex{},
 	}
@@ -77,8 +77,8 @@ func newWaitChan() waitChan {
 func main() {
 	port := os.Args[1]
 
-	values := newSafeQueue()
-	waiters := newSafeQueue()
+	values := newQueue()
+	waiters := newQueue()
 
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		queueName, ok := strings.CutPrefix(request.URL.Path, "/")
